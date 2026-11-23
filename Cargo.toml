@@ -1,0 +1,20 @@
+[package]
+name = "w3c-ebnf"
+version = "0.1.0"
+edition = "2024"
+description = "A parser library for the W3C variant of Extended Backus-Naur Form (EBNF)"
+license = "MIT"
+repository = "https://github.com/johnwright/w3c-ebnf"
+authors = ["John Wright"]
+keywords = ["ebnf", "parser", "w3c", "grammar", "lexer"]
+categories = ["parsing"]
+
+[lib]
+name = "w3c_ebnf"
+path = "src/lib.rs"
+
+[dependencies]
+logos = "0.16.1"
+
+[dev-dependencies]
+pulldown-cmark = "0.13.6"
