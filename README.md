@@ -23,8 +23,8 @@ factor        ::= String
 Symbol            ::= SymbolStart SymbolChar*
 SymbolStart       ::= [a-zA-Z_]
 SymbolChar        ::= SymbolStart | [0-9]
-String            ::= "'" [^']* "'"
-                    | '"' [^"]* '"'
+String            ::= "'" (Char - "'")* "'"
+                    | '"' (Char - '"')* '"'
 CharCode          ::= '#' 'x' [0-9A-Fa-f]+
 CharClass         ::= "[" "^"? ClassItems "]"
 ClassItems        ::= CharCodeClassItem+
@@ -32,8 +32,13 @@ ClassItems        ::= CharCodeClassItem+
 CharCodeClassItem ::= CharCode ("-" CharCode)?
 CharClassItem     ::= (Char - "]") ("-" (Char - "]"))?
 Comment           ::= "/*" Char* "*/"
-Char              ::= [#x00-#x10FFFF]
+Char              ::= #x9 | #xA | #xD
+                    | [#x20-#x7E]
+                    | [#xA0-#xD7FF]
+                    | [#xE000-#xFFFD]
+                    | [#x10000-#x10FFFF]
 ```
+
 ### Operators and Their Precedence
 
 *(Listed from lowest binding strength to highest)*

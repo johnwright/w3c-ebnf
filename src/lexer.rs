@@ -12,6 +12,9 @@ pub(crate) enum LexerError {
     InvalidCharRange(String),
     /// Character class has no items (e.g. `[]` or `[^]`).
     EmptyCharClass(String),
+    /// A string, comment or character class contains a character outside the
+    /// README grammar's `Char` rule (e.g. a form feed or other control character).
+    InvalidChar(char),
     /// Unrecognized character (default for unmatched input).
     #[default]
     Unknown,
@@ -52,6 +55,33 @@ fn parse_hex_char(slice: &str) -> Result<char, LexerError> {
         .ok_or_else(|| LexerError::InvalidCharCode(slice.to_string()))
 }
 
+/// Returns `true` if `c` matches the README grammar's `Char` rule:
+///
+/// ```text
+/// Char ::= #x9 | #xA | #xD | [#x20-#x7E] | [#xA0-#xD7FF]
+///        | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
+/// ```
+///
+/// That is tab, LF, CR, printable ASCII and the rest of Unicode, excluding other
+/// control characters, DEL, the C1 controls and the non-characters `#xFFFE`/`#xFFFF`.
+/// Surrogates need no check, because a Rust `char` can't be one.
+fn is_char(c: char) -> bool {
+    matches!(c,
+        '\t' | '\n' | '\r'
+        | '\u{20}'..='\u{7E}'
+        | '\u{A0}'..='\u{D7FF}'
+        | '\u{E000}'..='\u{FFFD}'
+        | '\u{10000}'..='\u{10FFFF}')
+}
+
+/// Fail with `InvalidChar` for the first character in `text` that isn't a `Char`.
+fn check_chars(text: &str) -> Result<(), LexerError> {
+    match text.chars().find(|&c| !is_char(c)) {
+        Some(c) => Err(LexerError::InvalidChar(c)),
+        None => Ok(()),
+    }
+}
+
 // ——— Inner lexer for the content inside `[ ... ]` ———
 
 /// Tokens for the mini-language inside a character class.
@@ -74,7 +104,10 @@ enum ClassToken {
     /// excluding `^` and `-` which are handled by other rules.
     /// Note: `#` and `x` are included here as a fallback — when the input is a
     /// complete hex code like `#x20`, the `HexCode` rule matches first (longer match).
-    #[regex(r"[^\-^]", |lex| lex.slice().chars().next().unwrap())]
+    #[regex(r"[^\-^]", |lex| {
+        let c = lex.slice().chars().next().unwrap();
+        if is_char(c) { Ok(c) } else { Err(LexerError::InvalidChar(c)) }
+    })]
     Char(char),
 }
 
@@ -82,12 +115,16 @@ enum ClassToken {
 #[derive(Debug, Clone, PartialEq, Logos)]
 #[logos(error = LexerError)]
 pub(crate) enum Token {
-    /// Whitespace — skipped by the parser.
-    #[regex(r"[ \t\n\r\f]+", logos::skip)]
+    /// Whitespace — skipped by the parser. Matches XML's
+    /// `S ::= (#x20 | #x9 | #xD | #xA)+`
+    #[regex(r"[ \t\n\r]+", logos::skip)]
     Whitespace,
 
-    /// Comments `/* ... */` — skipped by the parser.
-    #[regex(r"/\*[^*]*\*+([^/*][^*]*\*+)*/", logos::skip)]
+    /// Comments `/* ... */` — skipped by the parser, after checking that every
+    /// character is a `Char`.
+    #[regex(r"/\*[^*]*\*+([^/*][^*]*\*+)*/", |lex| {
+        check_chars(lex.slice()).map(|()| logos::Skip)
+    })]
     Comment,
 
     /// A symbol name (e.g. `Name`, `foo`).
@@ -271,9 +308,13 @@ impl Token {
         parse_hex_char(lex.slice())
     }
 
-    fn parse_string_literal(lex: &logos::Lexer<'_, Self>) -> String {
+    /// Strip the quotes from a string literal, checking that every character
+    /// inside them is a `Char`.
+    fn parse_string_literal(lex: &logos::Lexer<'_, Self>) -> Result<String, LexerError> {
         let s = lex.slice();
-        s[1..s.len() - 1].to_string()
+        let contents = &s[1..s.len() - 1];
+        check_chars(contents)?;
+        Ok(contents.to_string())
     }
 }
 
@@ -365,6 +406,98 @@ mod tests {
     fn comment_skipped() {
         let mut lex = lexer("/* this is a comment */ Name");
         assert_eq!(lex.next(), Some(Ok(Token::Name("Name".to_string()))));
+    }
+
+    #[test]
+    fn whitespace_skipped() {
+        let mut lex = lexer(" \t\r\nName");
+        assert_eq!(lex.next(), Some(Ok(Token::Name("Name".to_string()))));
+    }
+
+    #[test]
+    fn form_feed_is_not_whitespace() {
+        let mut lex = lexer("\x0CName");
+        assert_eq!(lex.next(), Some(Err(LexerError::Unknown)));
+    }
+
+    /// Characters outside the README grammar's `Char` rule, one from each excluded group.
+    const INVALID_CHARS: [char; 5] = [
+        '\u{0}',    // NUL (C0 control)
+        '\u{C}',    // form feed (C0 control)
+        '\u{7F}',   // DEL
+        '\u{85}',   // NEL (C1 control)
+        '\u{FFFE}', // non-character
+    ];
+
+    #[test]
+    fn invalid_char_in_double_quoted_string() {
+        for c in INVALID_CHARS {
+            let input = format!("\"a{c}b\"");
+            assert_eq!(lexer(&input).next(), Some(Err(LexerError::InvalidChar(c))), "{c:?}");
+        }
+    }
+
+    #[test]
+    fn invalid_char_in_single_quoted_string() {
+        for c in INVALID_CHARS {
+            let input = format!("'a{c}b'");
+            assert_eq!(lexer(&input).next(), Some(Err(LexerError::InvalidChar(c))), "{c:?}");
+        }
+    }
+
+    #[test]
+    fn invalid_char_in_comment() {
+        for c in INVALID_CHARS {
+            let input = format!("/* a{c}b */ Name");
+            assert_eq!(lexer(&input).next(), Some(Err(LexerError::InvalidChar(c))), "{c:?}");
+        }
+    }
+
+    #[test]
+    fn invalid_char_in_char_class() {
+        for c in INVALID_CHARS {
+            let input = format!("[a{c}b]");
+            assert_eq!(lexer(&input).next(), Some(Err(LexerError::InvalidChar(c))), "{c:?}");
+        }
+    }
+
+    #[test]
+    fn tab_and_newlines_allowed_in_string() {
+        assert_eq!(
+            lexer("\"a\tb\r\nc\"").next(),
+            Some(Ok(Token::DoubleQuoted("a\tb\r\nc".to_string())))
+        );
+    }
+
+    #[test]
+    fn tab_and_newlines_allowed_in_comment() {
+        let mut lex = lexer("/* line one\r\n\tline two\n */ Name");
+        assert_eq!(lex.next(), Some(Ok(Token::Name("Name".to_string()))));
+    }
+
+    #[test]
+    fn non_ascii_allowed() {
+        // Latin-1 letter, BMP character above the surrogates, supplementary plane
+        assert_eq!(
+            lexer("\"é\u{E000}😀\"").next(),
+            Some(Ok(Token::DoubleQuoted("é\u{E000}😀".to_string())))
+        );
+        assert_eq!(
+            class_items("[é😀]"),
+            vec![ClassItem::Char('é'), ClassItem::Char('😀')]
+        );
+    }
+
+    #[test]
+    fn excluded_chars_allowed_as_hex_codes() {
+        assert_eq!(lexer("#xC").next(), Some(Ok(Token::CharCode('\u{C}'))));
+        assert_eq!(
+            class_items("[#x0-#x1F#x7F]"),
+            vec![
+                ClassItem::Range { start: '\u{0}', end: '\u{1F}' },
+                ClassItem::Char('\u{7F}'),
+            ]
+        );
     }
 
     #[test]

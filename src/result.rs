@@ -13,8 +13,7 @@ impl ParseError {
         }
     }
 
-    /// A human-readable description of the error, without the "Parse error: "
-    /// prefix that `Display` adds.
+    /// A human-readable description of the error.
     pub fn message(&self) -> &str {
         &self.message
     }

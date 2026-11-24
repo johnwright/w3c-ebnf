@@ -17,6 +17,10 @@ fn lexer_error_to_parse_error(e: LexerError) -> ParseError {
         LexerError::EmptyCharClass(class) => {
             ParseError::new(format!("Empty character class: {}", class))
         }
+        LexerError::InvalidChar(c) => ParseError::new(format!(
+            "Invalid character U+{:04X} (use a hex code like #x{:X} instead)",
+            c as u32, c as u32
+        )),
         LexerError::Unknown =>ParseError::new("Unexpected character in input"),
     }
 }
@@ -444,6 +448,19 @@ mod tests {
             Err(GrammarError::Parse(e)) => {
                 assert_eq!(e.message(), "Invalid character range: [#x7A-#x61]")
             }
+            other => panic!("Expected parse error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn invalid_char_message() {
+        // A form feed inside a string literal
+        let result = parse("Foo ::= \"a\x0Cb\"");
+        match result {
+            Err(GrammarError::Parse(e)) => assert_eq!(
+                e.message(),
+                "Invalid character U+000C (use a hex code like #xC instead)"
+            ),
             other => panic!("Expected parse error, got {:?}", other),
         }
     }
